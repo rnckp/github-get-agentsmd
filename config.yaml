@@ -54,6 +54,17 @@ agents_md:
   # Delay between downloads to avoid rate limiting (seconds)
   delay: 0.1
 
+  # Filename variants to try (case-sensitive search order)
+  filename_variants:
+    agents_md:
+      - AGENTS.md
+      # - Agents.md
+      # - agents.md
+    claude_md:
+      - CLAUDE.md
+      # - Claude.md
+      # - claude.md
+
   # Download settings
   download:
     timeout: 30
@@ -61,5 +72,5 @@ agents_md:
     # Exponential backoff base for rate limit retries
     backoff_base: 2
 
-  # GitHub raw content URL pattern
-  raw_url_pattern: "https://raw.githubusercontent.com/{repo}/{branch}/AGENTS.md"
+  # GitHub raw content URL pattern (filename will be inserted)
+  raw_url_pattern: "https://raw.githubusercontent.com/{repo}/{branch}/{filename}"

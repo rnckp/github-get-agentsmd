@@ -1,6 +1,6 @@
-# GitHub AGENTS.md Scraper
+# GitHub AGENTS.md and CLAUDE.md Scraper
 
-**Discover and download AGENTS.md files from GitHub repositories.**
+**Discover and download AGENTS.md and CLAUDE.md files from GitHub repositories.**
 
 [![Python](https://img.shields.io/badge/python-v3.12+-blue.svg)](https://github.com/rnckp/github-get-agentsmd)
 ![GitHub License](https://img.shields.io/github/license/rnckp/github-get-agentsmd)
@@ -13,7 +13,7 @@
 ## What It Does
 
 1. **`get_repos.py`** — Find repos via GitHub Search API
-2. **`get_agentsmd.py`** — Download their AGENTS.md files
+2. **`get_agentsmd.py`** — Download their AGENTS.md and CLAUDE.md files
 
 Searches recent, non-archived GitHub repos sorted by stars (default: 50,000 repos max). Default language: Python. Configurable via [config.yaml](config.yaml).
 
@@ -53,7 +53,7 @@ uv run python get_repos.py
 
 Output: `repos_YYYY-MM-DD_HHMMSS.jsonl`
 
-### 2. Download AGENTS.md Files
+### 2. Download AGENTS.md and CLAUDE.md Files
 
 ```bash
 # Use newest repos file

@@ -63,12 +63,21 @@ class Repo:
 
 @dataclass
 class DownloadResult:
-    """Result of attempting to download AGENTS.md."""
+    """Result of attempting to download AGENTS.md and CLAUDE.md."""
 
     repo_full_name: str
-    success: bool
+    agents_md_found: bool = False
+    agents_md_size: int | None = None
+    agents_md_variant: str | None = None
+    claude_md_found: bool = False
+    claude_md_size: int | None = None
+    claude_md_variant: str | None = None
     error: str | None = None
-    file_size: int | None = None
+
+    @property
+    def success(self) -> bool:
+        """At least one file was found."""
+        return self.agents_md_found or self.claude_md_found
 
 
 def load_repos(repos_file: Path) -> list[Repo]:
@@ -81,6 +90,61 @@ def load_repos(repos_file: Path) -> list[Repo]:
     return repos
 
 
+def try_download_file(
+    repo: Repo,
+    repo_dir: Path,
+    filename_variants: list[str],
+    timeout: int,
+    max_retries: int,
+) -> tuple[bool, int | None, str | None, str | None]:
+    """
+    Try to download a file using case-insensitive filename variants.
+
+    Returns:
+        Tuple of (found, file_size, variant_used, error)
+    """
+    for variant in filename_variants:
+        url = AGENTS_MD_CONFIG["raw_url_pattern"].format(
+            repo=repo.full_name, branch=repo.default_branch, filename=variant
+        )
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = requests.get(url, timeout=timeout)
+
+                if response.status_code == 200:
+                    # Create directory only when we have a file to save
+                    repo_dir.mkdir(parents=True, exist_ok=True)
+                    # Save the file with the variant name that worked
+                    file_path = repo_dir / variant
+                    file_path.write_text(response.text, encoding="utf-8")
+                    return True, len(response.text), variant, None
+
+                if response.status_code == 404:
+                    # Try next variant
+                    break
+
+                if response.status_code == 403:
+                    # Rate limited - wait and retry
+                    if attempt < max_retries:
+                        backoff = DOWNLOAD_CONFIG["backoff_base"] ** attempt
+                        time.sleep(backoff)
+                        continue
+                    return False, None, None, f"Rate limited (403) after {max_retries} retries"
+
+                # Other HTTP errors - try next variant
+                break
+
+            except requests.Timeout:
+                if attempt < max_retries:
+                    continue
+                return False, None, None, "Timeout"
+            except Exception as e:
+                return False, None, None, str(e)
+
+    return False, None, None, None
+
+
 def download_agents_md(
     repo: Repo,
     output_dir: Path,
@@ -88,84 +152,51 @@ def download_agents_md(
     max_retries: int | None = None,
 ) -> DownloadResult:
     """
-    Download AGENTS.md from a repository's default branch.
+    Download AGENTS.md and CLAUDE.md from a repository's default branch.
 
-    Tries the raw GitHub content URL first.
+    Tries multiple case variants for each file.
     """
     if timeout is None:
         timeout = DOWNLOAD_CONFIG["timeout"]
     if max_retries is None:
         max_retries = DOWNLOAD_CONFIG["max_retries"]
 
-    # GitHub raw content URL pattern from config
-    url = AGENTS_MD_CONFIG["raw_url_pattern"].format(
-        repo=repo.full_name, branch=repo.default_branch
+    # Prepare output directory path (org/repo) - will be created only if files are found
+    org, repo_name = repo.full_name.split("/")
+    repo_dir = output_dir / org / repo_name
+
+    # Get filename variants from config
+    filename_variants = AGENTS_MD_CONFIG.get("filename_variants", {})
+    agents_variants = filename_variants.get("agents_md", ["AGENTS.md"])
+    claude_variants = filename_variants.get("claude_md", ["CLAUDE.md"])
+
+    # Try to download AGENTS.md
+    agents_found, agents_size, agents_variant, agents_error = try_download_file(
+        repo, repo_dir, agents_variants, timeout, max_retries
     )
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = requests.get(url, timeout=timeout)
+    # Try to download CLAUDE.md
+    claude_found, claude_size, claude_variant, claude_error = try_download_file(
+        repo, repo_dir, claude_variants, timeout, max_retries
+    )
 
-            if response.status_code == 200:
-                # Create output directory structure (org/repo)
-                org, repo_name = repo.full_name.split("/")
-                repo_dir = output_dir / org / repo_name
-                repo_dir.mkdir(parents=True, exist_ok=True)
-
-                # Save the file
-                agents_md_path = repo_dir / "AGENTS.md"
-                agents_md_path.write_text(response.text, encoding="utf-8")
-
-                return DownloadResult(
-                    repo_full_name=repo.full_name,
-                    success=True,
-                    file_size=len(response.text),
-                )
-
-            if response.status_code == 404:
-                return DownloadResult(
-                    repo_full_name=repo.full_name,
-                    success=False,
-                    error="File not found",
-                )
-
-            if response.status_code == 403:
-                # Rate limited - wait and retry
-                if attempt < max_retries:
-                    backoff = DOWNLOAD_CONFIG["backoff_base"] ** attempt
-                    time.sleep(backoff)
-                    continue
-                return DownloadResult(
-                    repo_full_name=repo.full_name,
-                    success=False,
-                    error=f"Rate limited (403) after {max_retries} retries",
-                )
-
-            return DownloadResult(
-                repo_full_name=repo.full_name,
-                success=False,
-                error=f"HTTP {response.status_code}",
-            )
-
-        except requests.Timeout:
-            if attempt < max_retries:
-                continue
-            return DownloadResult(
-                repo_full_name=repo.full_name,
-                success=False,
-                error="Timeout",
-            )
-        except Exception as e:
-            return DownloadResult(
-                repo_full_name=repo.full_name,
-                success=False,
-                error=str(e),
-            )
+    # Combine errors if both failed with errors
+    error = None
+    if not agents_found and not claude_found:
+        if agents_error or claude_error:
+            error = agents_error or claude_error
+        else:
+            error = "No AGENTS.md or CLAUDE.md found"
 
     return DownloadResult(
         repo_full_name=repo.full_name,
-        success=False,
-        error=f"Failed after {max_retries} retries",
+        agents_md_found=agents_found,
+        agents_md_size=agents_size,
+        agents_md_variant=agents_variant,
+        claude_md_found=claude_found,
+        claude_md_size=claude_size,
+        claude_md_variant=claude_variant,
+        error=error,
     )
 
 
@@ -173,6 +204,9 @@ def print_summary(results: list[DownloadResult]) -> None:
     """Print summary statistics of download results."""
     successful = sum(1 for r in results if r.success)
     failed = len(results) - successful
+    agents_count = sum(1 for r in results if r.agents_md_found)
+    claude_count = sum(1 for r in results if r.claude_md_found)
+    both_count = sum(1 for r in results if r.agents_md_found and r.claude_md_found)
 
     # Count error types
     error_counts: dict[str, int] = {}
@@ -186,8 +220,12 @@ def print_summary(results: list[DownloadResult]) -> None:
     table.add_column("Count", style="green", justify="right")
 
     table.add_row("Total repositories", str(len(results)))
-    table.add_row("Successfully downloaded", str(successful))
-    table.add_row("Failed", str(failed))
+    table.add_row("Repos with files found", str(successful))
+    table.add_row("Repos without files", str(failed))
+    table.add_section()
+    table.add_row("AGENTS.md found", str(agents_count))
+    table.add_row("CLAUDE.md found", str(claude_count))
+    table.add_row("Both files found", str(both_count))
 
     if error_counts:
         table.add_section()
@@ -215,12 +253,12 @@ def main(
     delay: float | None = None,
 ) -> None:
     """
-    Download AGENTS.md files from all repositories in repos.jsonl.
+    Download AGENTS.md and CLAUDE.md files from all repositories in repos.jsonl.
 
     Args:
         repos_file: Path to the JSONL file containing repository data.
                    If None, uses the most recent repos_*.jsonl file.
-        output_dir: Base directory name to save downloaded AGENTS.md files (defaults to config)
+        output_dir: Base directory name to save downloaded files (defaults to config)
         delay: Delay in seconds between downloads to avoid rate limiting (defaults to config)
     """
     if output_dir is None:
@@ -251,7 +289,7 @@ def main(
 
     console.print(
         Panel.fit(
-            f"[bold]AGENTS.md Downloader[/bold]\n"
+            f"[bold]AGENTS.md & CLAUDE.md Downloader[/bold]\n"
             f"Source: [cyan]{repos_path}[/cyan]\n"
             f"Output: [cyan]{output_path}/[/cyan]",
             border_style="blue",
@@ -277,14 +315,19 @@ def main(
         console=console,
     ) as progress:
         task = progress.add_task(
-            "[cyan]Downloading AGENTS.md files...", total=len(repos)
+            "[cyan]Downloading files...", total=len(repos)
         )
 
         for repo in repos:
             result = download_agents_md(repo, output_path)
             results.append(result)
 
-            status = "✓" if result.success else "✗"
+            status_parts = []
+            if result.agents_md_found:
+                status_parts.append("A")
+            if result.claude_md_found:
+                status_parts.append("C")
+            status = "✓" + ",".join(status_parts) if result.success else "✗"
             progress.update(
                 task,
                 advance=1,
@@ -307,8 +350,13 @@ def main(
                     {
                         "repo": result.repo_full_name,
                         "success": result.success,
+                        "agents_md_found": result.agents_md_found,
+                        "agents_md_size": result.agents_md_size,
+                        "agents_md_variant": result.agents_md_variant,
+                        "claude_md_found": result.claude_md_found,
+                        "claude_md_size": result.claude_md_size,
+                        "claude_md_variant": result.claude_md_variant,
                         "error": result.error,
-                        "file_size": result.file_size,
                     }
                 )
                 + "\n"
@@ -318,7 +366,7 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Download AGENTS.md files from GitHub repositories",
+        description="Download AGENTS.md and CLAUDE.md files from GitHub repositories",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
