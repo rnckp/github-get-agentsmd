@@ -1,6 +1,6 @@
 # GitHub AGENTS.md Scraper
 
-**Discover and download AGENTS.md files from Python repositories.**
+**Discover and download AGENTS.md files from GitHub repositories.**
 
 [![Python](https://img.shields.io/badge/python-v3.12+-blue.svg)](https://github.com/rnckp/github-get-agentsmd)
 ![GitHub License](https://img.shields.io/github/license/rnckp/github-get-agentsmd)
@@ -12,10 +12,10 @@
 
 ## What It Does
 
-1. **`get_repos.py`** — Find Python repos via GitHub Search API
+1. **`get_repos.py`** — Find repos via GitHub Search API
 2. **`get_agentsmd.py`** — Download their AGENTS.md files
 
-Searches recent, non-archived Python repos sorted by stars (default: 50,000 repos max).
+Searches recent, non-archived GitHub repos sorted by stars (default: 50,000 repos max). Default language: Python. Configurable via [config.yaml](config.yaml).
 
 ## Installation
 
