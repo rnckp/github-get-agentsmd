@@ -209,7 +209,5 @@ __marimo__/
 # App specific ignores
 .DS_Store
 *.jsonl
-/agents_md_2026-01-04_122036
 uv.lock
-/agents_md_2026-01-04_125032
-/agents_md_2026-01-04_130359
+/agents_md_*

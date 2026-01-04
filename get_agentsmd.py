@@ -1,7 +1,9 @@
 import argparse
 import json
+import os
 import time
 import datetime as dt
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
@@ -21,6 +23,17 @@ from rich.table import Table
 
 console = Console()
 
+# GitHub API authentication (optional but recommended for higher rate limits)
+TOKEN = os.environ.get("GITHUB_TOKEN")
+HEADERS = {
+    "User-Agent": "agent-md-downloader/1.0",
+}
+if TOKEN:
+    HEADERS["Authorization"] = f"Bearer {TOKEN}"
+
+session = requests.Session()
+session.headers.update(HEADERS)
+
 
 def load_config(config_path: str = "config.yaml") -> dict[str, Any]:
     """Load configuration from YAML file."""
@@ -31,8 +44,24 @@ def load_config(config_path: str = "config.yaml") -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def validate_agents_config(config: dict[str, Any]) -> None:
+    """Validate agents_md configuration has required keys."""
+    required_keys = ["output_dir", "delay", "download", "raw_url_pattern"]
+    agents_config = config.get("agents_md")
+    if not agents_config:
+        raise ValueError("Config missing 'agents_md' section")
+    for key in required_keys:
+        if key not in agents_config:
+            raise ValueError(f"Config agents_md missing required key: {key}")
+    download_config = agents_config.get("download", {})
+    for key in ["timeout", "max_retries", "backoff_base"]:
+        if key not in download_config:
+            raise ValueError(f"Config agents_md.download missing required key: {key}")
+
+
 # Load configuration
 CONFIG = load_config()
+validate_agents_config(CONFIG)
 AGENTS_MD_CONFIG = CONFIG["agents_md"]
 DOWNLOAD_CONFIG = AGENTS_MD_CONFIG["download"]
 
@@ -90,18 +119,28 @@ def load_repos(repos_file: Path) -> list[Repo]:
     return repos
 
 
+@dataclass
+class FileDownloadResult:
+    """Result of attempting to download a single file."""
+
+    found: bool
+    size: int | None = None
+    variant: str | None = None
+    error: str | None = None
+
+
 def try_download_file(
     repo: Repo,
     repo_dir: Path,
     filename_variants: list[str],
     timeout: int,
     max_retries: int,
-) -> tuple[bool, int | None, str | None, str | None]:
+) -> FileDownloadResult:
     """
     Try to download a file using case-insensitive filename variants.
 
     Returns:
-        Tuple of (found, file_size, variant_used, error)
+        FileDownloadResult with found status, size, variant used, and any error.
     """
     for variant in filename_variants:
         url = AGENTS_MD_CONFIG["raw_url_pattern"].format(
@@ -110,7 +149,7 @@ def try_download_file(
 
         for attempt in range(1, max_retries + 1):
             try:
-                response = requests.get(url, timeout=timeout)
+                response = session.get(url, timeout=timeout)
 
                 if response.status_code == 200:
                     # Create directory only when we have a file to save
@@ -118,7 +157,7 @@ def try_download_file(
                     # Save the file with the variant name that worked
                     file_path = repo_dir / variant
                     file_path.write_text(response.text, encoding="utf-8")
-                    return True, len(response.text), variant, None
+                    return FileDownloadResult(True, len(response.text), variant, None)
 
                 if response.status_code == 404:
                     # Try next variant
@@ -130,7 +169,12 @@ def try_download_file(
                         backoff = DOWNLOAD_CONFIG["backoff_base"] ** attempt
                         time.sleep(backoff)
                         continue
-                    return False, None, None, f"Rate limited (403) after {max_retries} retries"
+                    return FileDownloadResult(
+                        False,
+                        None,
+                        None,
+                        f"Rate limited (403) after {max_retries} retries",
+                    )
 
                 # Other HTTP errors - try next variant
                 break
@@ -138,11 +182,11 @@ def try_download_file(
             except requests.Timeout:
                 if attempt < max_retries:
                     continue
-                return False, None, None, "Timeout"
+                return FileDownloadResult(False, None, None, "Timeout")
             except Exception as e:
-                return False, None, None, str(e)
+                return FileDownloadResult(False, None, None, str(e))
 
-    return False, None, None, None
+    return FileDownloadResult(False, None, None, None)
 
 
 def download_agents_md(
@@ -171,36 +215,36 @@ def download_agents_md(
     claude_variants = filename_variants.get("claude_md", ["CLAUDE.md"])
 
     # Try to download AGENTS.md
-    agents_found, agents_size, agents_variant, agents_error = try_download_file(
+    agents_result = try_download_file(
         repo, repo_dir, agents_variants, timeout, max_retries
     )
 
     # Try to download CLAUDE.md
-    claude_found, claude_size, claude_variant, claude_error = try_download_file(
+    claude_result = try_download_file(
         repo, repo_dir, claude_variants, timeout, max_retries
     )
 
     # Combine errors if both failed with errors
     error = None
-    if not agents_found and not claude_found:
-        if agents_error or claude_error:
-            error = agents_error or claude_error
+    if not agents_result.found and not claude_result.found:
+        if agents_result.error or claude_result.error:
+            error = agents_result.error or claude_result.error
         else:
             error = "No AGENTS.md or CLAUDE.md found"
 
     return DownloadResult(
         repo_full_name=repo.full_name,
-        agents_md_found=agents_found,
-        agents_md_size=agents_size,
-        agents_md_variant=agents_variant,
-        claude_md_found=claude_found,
-        claude_md_size=claude_size,
-        claude_md_variant=claude_variant,
+        agents_md_found=agents_result.found,
+        agents_md_size=agents_result.size,
+        agents_md_variant=agents_result.variant,
+        claude_md_found=claude_result.found,
+        claude_md_size=claude_result.size,
+        claude_md_variant=claude_result.variant,
         error=error,
     )
 
 
-def print_summary(results: list[DownloadResult]) -> None:
+def print_summary(results: list[DownloadResult], skipped: int = 0) -> None:
     """Print summary statistics of download results."""
     successful = sum(1 for r in results if r.success)
     failed = len(results) - successful
@@ -219,7 +263,9 @@ def print_summary(results: list[DownloadResult]) -> None:
     table.add_column("Metric", style="cyan")
     table.add_column("Count", style="green", justify="right")
 
-    table.add_row("Total repositories", str(len(results)))
+    table.add_row("Total repositories", str(len(results) + skipped))
+    if skipped > 0:
+        table.add_row("Skipped (already processed)", str(skipped))
     table.add_row("Repos with files found", str(successful))
     table.add_row("Repos without files", str(failed))
     table.add_section()
@@ -247,10 +293,32 @@ def find_latest_repos_file() -> Path | None:
     return max(repos_files, key=lambda p: p.stat().st_mtime)
 
 
+def load_previous_results(output_path: Path) -> set[str]:
+    """Load previously processed repo names from download_results.jsonl."""
+    results_file = output_path / "download_results.jsonl"
+    processed = set()
+    if results_file.exists():
+        with results_file.open(encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    data = json.loads(line)
+                    processed.add(data["repo"])
+    return processed
+
+
+def download_worker(
+    repo: Repo, output_path: Path, timeout: int, max_retries: int
+) -> DownloadResult:
+    """Worker function for parallel downloads."""
+    return download_agents_md(repo, output_path, timeout, max_retries)
+
+
 def main(
     repos_file: str | None = None,
     output_dir: str | None = None,
     delay: float | None = None,
+    workers: int | None = None,
+    resume: bool = False,
 ) -> None:
     """
     Download AGENTS.md and CLAUDE.md files from all repositories in repos.jsonl.
@@ -260,11 +328,16 @@ def main(
                    If None, uses the most recent repos_*.jsonl file.
         output_dir: Base directory name to save downloaded files (defaults to config)
         delay: Delay in seconds between downloads to avoid rate limiting (defaults to config)
+        workers: Number of parallel download workers (1 for sequential)
+        resume: Resume from existing output directory, skipping already processed repos
     """
     if output_dir is None:
         output_dir = AGENTS_MD_CONFIG["output_dir"]
     if delay is None:
         delay = AGENTS_MD_CONFIG["delay"]
+    if workers is None:
+        workers = AGENTS_MD_CONFIG.get("workers", 1)
+
     # Find repos file if not specified
     if repos_file is None:
         latest = find_latest_repos_file()
@@ -279,9 +352,22 @@ def main(
     else:
         repos_path = Path(repos_file)
 
-    # Add timestamp to output directory
-    timestamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    output_path = Path(f"{output_dir}_{timestamp}")
+    # Handle resume mode or create new timestamped directory
+    if resume:
+        # Find latest existing output directory
+        existing_dirs = sorted(Path.cwd().glob(f"{output_dir}_*"), reverse=True)
+        if existing_dirs:
+            output_path = existing_dirs[0]
+            console.print(f"[cyan]Resuming in: {output_path.name}[/cyan]")
+        else:
+            console.print(
+                "[yellow]No existing output directory found, creating new one[/yellow]"
+            )
+            timestamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            output_path = Path(f"{output_dir}_{timestamp}")
+    else:
+        timestamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        output_path = Path(f"{output_dir}_{timestamp}")
 
     if not repos_path.exists():
         console.print(f"[red]Error: {repos_path} not found[/red]")
@@ -291,7 +377,8 @@ def main(
         Panel.fit(
             f"[bold]AGENTS.md & CLAUDE.md Downloader[/bold]\n"
             f"Source: [cyan]{repos_path}[/cyan]\n"
-            f"Output: [cyan]{output_path}/[/cyan]",
+            f"Output: [cyan]{output_path}/[/cyan]\n"
+            f"Workers: [cyan]{workers}[/cyan]",
             border_style="blue",
         )
     )
@@ -301,11 +388,29 @@ def main(
     repos = load_repos(repos_path)
     console.print(f"[green]✓ Loaded {len(repos)} repositories[/green]")
 
+    # Check for already processed repos if resuming
+    skipped_count = 0
+    if resume:
+        processed = load_previous_results(output_path)
+        if processed:
+            original_count = len(repos)
+            repos = [r for r in repos if r.full_name not in processed]
+            skipped_count = original_count - len(repos)
+            console.print(
+                f"[yellow]Skipping {skipped_count} already processed repos[/yellow]"
+            )
+
+    if not repos:
+        console.print("[green]✓ All repositories already processed[/green]")
+        return
+
     # Create output directory
     output_path.mkdir(exist_ok=True)
 
-    # Download AGENTS.md files
+    # Download files
     results: list[DownloadResult] = []
+    timeout = DOWNLOAD_CONFIG["timeout"]
+    max_retries = DOWNLOAD_CONFIG["max_retries"]
 
     with Progress(
         SpinnerColumn(),
@@ -314,36 +419,68 @@ def main(
         MofNCompleteColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task(
-            "[cyan]Downloading files...", total=len(repos)
-        )
+        task = progress.add_task("[cyan]Downloading files...", total=len(repos))
 
-        for repo in repos:
-            result = download_agents_md(repo, output_path)
-            results.append(result)
+        if workers > 1:
+            # Parallel downloads
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(
+                        download_worker, repo, output_path, timeout, max_retries
+                    ): repo
+                    for repo in repos
+                }
+                for future in as_completed(futures):
+                    repo = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as e:
+                        result = DownloadResult(
+                            repo_full_name=repo.full_name,
+                            error=str(e),
+                        )
+                    results.append(result)
 
-            status_parts = []
-            if result.agents_md_found:
-                status_parts.append("A")
-            if result.claude_md_found:
-                status_parts.append("C")
-            status = "✓" + ",".join(status_parts) if result.success else "✗"
-            progress.update(
-                task,
-                advance=1,
-                description=f"[cyan]Downloading... {status} {repo.full_name}",
-            )
+                    status_parts = []
+                    if result.agents_md_found:
+                        status_parts.append("A")
+                    if result.claude_md_found:
+                        status_parts.append("C")
+                    status = "✓" + ",".join(status_parts) if result.success else "✗"
+                    progress.update(
+                        task,
+                        advance=1,
+                        description=f"[cyan]Downloading... {status} {repo.full_name}",
+                    )
+        else:
+            # Sequential downloads with delay
+            for repo in repos:
+                result = download_agents_md(repo, output_path)
+                results.append(result)
 
-            # Polite delay to avoid rate limiting
-            if delay > 0:
-                time.sleep(delay)
+                status_parts = []
+                if result.agents_md_found:
+                    status_parts.append("A")
+                if result.claude_md_found:
+                    status_parts.append("C")
+                status = "✓" + ",".join(status_parts) if result.success else "✗"
+                progress.update(
+                    task,
+                    advance=1,
+                    description=f"[cyan]Downloading... {status} {repo.full_name}",
+                )
+
+                # Polite delay to avoid rate limiting
+                if delay > 0:
+                    time.sleep(delay)
 
     # Print summary
-    print_summary(results)
+    print_summary(results, skipped_count)
 
-    # Save results log
+    # Save results log (append if resuming)
     results_file = output_path / "download_results.jsonl"
-    with results_file.open("w", encoding="utf-8") as f:
+    mode = "a" if resume else "w"
+    with results_file.open(mode, encoding="utf-8") as f:
         for result in results:
             f.write(
                 json.dumps(
@@ -374,6 +511,9 @@ Examples:
   %(prog)s -f repos.jsonl               # Use specific file
   %(prog)s -f repos.jsonl -d 0.2        # Custom delay between downloads
   %(prog)s -o my_agents -d 0.05         # Custom output dir and delay
+  %(prog)s -w 4                         # Use 4 parallel workers
+  %(prog)s -r                           # Resume from latest output directory
+  %(prog)s -r -w 8                      # Resume with 8 parallel workers
         """,
     )
     parser.add_argument(
@@ -394,6 +534,25 @@ Examples:
         type=float,
         help="Delay in seconds between downloads (default: from config.yaml)",
     )
+    parser.add_argument(
+        "-w",
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of parallel download workers (default: 1 for sequential)",
+    )
+    parser.add_argument(
+        "-r",
+        "--resume",
+        action="store_true",
+        help="Resume from latest output directory, skipping already processed repos",
+    )
 
     args = parser.parse_args()
-    main(repos_file=args.repos_file, output_dir=args.output_dir, delay=args.delay)
+    main(
+        repos_file=args.repos_file,
+        output_dir=args.output_dir,
+        delay=args.delay,
+        workers=args.workers,
+        resume=args.resume,
+    )

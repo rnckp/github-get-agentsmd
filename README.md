@@ -48,7 +48,9 @@ export GITHUB_TOKEN="ghp_..."
 ### 1. Discover Repositories
 
 ```bash
-uv run python get_repos.py
+uv run python get_repos.py                 # Use defaults from config.yaml
+uv run python get_repos.py -n 1000         # Limit to 1000 repos
+uv run python get_repos.py --dry-run       # Preview query partitions without fetching
 ```
 
 Output: `repos_YYYY-MM-DD_HHMMSS.jsonl`
@@ -56,11 +58,10 @@ Output: `repos_YYYY-MM-DD_HHMMSS.jsonl`
 ### 2. Download AGENTS.md and CLAUDE.md Files
 
 ```bash
-# Use newest repos file
-uv run python get_agentsmd.py
-
-# Specify file and options
-uv run python get_agentsmd.py -f repos_2026-01-04_143022.jsonl -o my_agents -d 0.2
+uv run python get_agentsmd.py              # Auto-detect newest repos file
+uv run python get_agentsmd.py -w 8         # Use 8 parallel workers (faster)
+uv run python get_agentsmd.py -r           # Resume interrupted download
+uv run python get_agentsmd.py -r -w 8      # Resume with parallel workers
 ```
 
 Output: `agents_md_YYYY-MM-DD_HHMMSS/org/repo/AGENTS.md` + `download_results.jsonl`

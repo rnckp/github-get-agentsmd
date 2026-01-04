@@ -54,6 +54,9 @@ agents_md:
   # Delay between downloads to avoid rate limiting (seconds)
   delay: 0.1
 
+  # Number of parallel download workers (1 for sequential)
+  workers: 2
+
   # Filename variants to try (case-sensitive search order)
   filename_variants:
     agents_md:

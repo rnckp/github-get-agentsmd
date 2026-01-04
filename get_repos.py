@@ -1,3 +1,4 @@
+import argparse
 import os
 import json
 import time
@@ -44,8 +45,38 @@ def load_config(config_path: str = "config.yaml") -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def validate_repos_config(config: dict[str, Any]) -> None:
+    """Validate repos configuration has required keys."""
+    repos_config = config.get("repos")
+    if not repos_config:
+        raise ValueError("Config missing 'repos' section")
+    required_keys = [
+        "language",
+        "cutoff",
+        "today",
+        "max_repos",
+        "output_file",
+        "star_bins",
+    ]
+    for key in required_keys:
+        if key not in repos_config:
+            raise ValueError(f"Config repos missing required key: {key}")
+    # Validate nested sections
+    if "api" not in repos_config:
+        raise ValueError("Config repos missing 'api' section")
+    for key in ["timeout", "max_retries", "max_backoff", "backoff_exponent"]:
+        if key not in repos_config["api"]:
+            raise ValueError(f"Config repos.api missing required key: {key}")
+    if "partition" not in repos_config:
+        raise ValueError("Config repos missing 'partition' section")
+    for key in ["max_per_query", "partition_sleep", "page_sleep"]:
+        if key not in repos_config["partition"]:
+            raise ValueError(f"Config repos.partition missing required key: {key}")
+
+
 # Load configuration
 CONFIG = load_config()
+validate_repos_config(CONFIG)
 REPOS_CONFIG = CONFIG["repos"]
 API_CONFIG = REPOS_CONFIG["api"]
 PARTITION_CONFIG = REPOS_CONFIG["partition"]
@@ -76,11 +107,15 @@ class RepoQuery:
     pushed_hi: dt.date  # inclusive
 
 
+# Maximum pages to fetch per query (GitHub API limit is 1000 results = 10 pages of 100)
+MAX_PAGES_PER_QUERY = 10
+
+
 def gh_get(
     url: str,
     *,
-    params=None,
-    headers=None,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
     timeout: int | None = None,
     max_retries: int | None = None,
 ) -> requests.Response:
@@ -153,8 +188,11 @@ def gh_get(
 
 
 def _stars_qual(lo: int | None, hi: int | None) -> str:
+    """Build GitHub search qualifier for star count range."""
     if lo is None and hi is None:
         return ""
+    if lo is None:
+        return f"stars:<={hi}"
     if hi is None:
         return f"stars:>={lo}"
     if lo == hi:
@@ -266,7 +304,7 @@ def build_partitions(target_max_per_query: int | None = None) -> list[RepoQuery]
 def fetch_repos_for_partition(q: RepoQuery):
     """Fetch all repositories for a given query partition."""
     qs = _build_q(q)
-    for page in range(1, 11):
+    for page in range(1, MAX_PAGES_PER_QUERY + 1):
         r = gh_get(
             f"{API}/search/repositories",
             params={
@@ -281,6 +319,7 @@ def fetch_repos_for_partition(q: RepoQuery):
         if not items:
             break
         yield from items
+        # Polite delay between pages to avoid rate limiting
         time.sleep(PARTITION_CONFIG["page_sleep"])
 
 
@@ -303,13 +342,18 @@ def print_rate_limit():
     console.print(table)
 
 
-def main(max_repos: int | None = None, out_path: str | None = None) -> None:
+def main(
+    max_repos: int | None = None,
+    out_path: str | None = None,
+    dry_run: bool = False,
+) -> None:
     """
     Discover Python repositories and save to JSONL file.
 
     Args:
         max_repos: Maximum number of repositories to fetch (defaults to config)
         out_path: Base path for output file (defaults to config, timestamp will be added)
+        dry_run: If True, only show partitions without fetching repositories
     """
     if max_repos is None:
         max_repos = REPOS_CONFIG["max_repos"]
@@ -321,9 +365,10 @@ def main(max_repos: int | None = None, out_path: str | None = None) -> None:
     ext = out_path.rsplit(".", 1)[1] if "." in out_path else ""
     out_path = f"{base_name}_{timestamp}.{ext}" if ext else f"{base_name}_{timestamp}"
 
+    mode_label = "[yellow]DRY RUN[/yellow]" if dry_run else "[green]LIVE[/green]"
     console.print(
         Panel.fit(
-            f"[bold]GitHub Agent.md Scraper[/bold]\n"
+            f"[bold]GitHub Agent.md Scraper[/bold] {mode_label}\n"
             f"Target: [cyan]{max_repos}[/cyan] repos\n"
             f"Output: [cyan]{out_path}[/cyan]",
             border_style="blue",
@@ -333,7 +378,35 @@ def main(max_repos: int | None = None, out_path: str | None = None) -> None:
     print_rate_limit()
 
     partitions = build_partitions()
-    seen_ids = set()
+
+    if dry_run:
+        # Display partition summary and exit
+        table = Table(title="Query Partitions (Dry Run)", show_header=True)
+        table.add_column("#", style="dim", justify="right")
+        table.add_column("Stars", style="cyan")
+        table.add_column("Date Range", style="green")
+        table.add_column("Query", style="dim")
+
+        for i, p in enumerate(partitions, 1):
+            stars = _stars_qual(p.stars_lo, p.stars_hi) or "any"
+            date_range = f"{p.pushed_lo} to {p.pushed_hi}"
+            query = _build_q(p)
+            table.add_row(
+                str(i),
+                stars,
+                date_range,
+                query[:60] + "..." if len(query) > 60 else query,
+            )
+
+        console.print("\n")
+        console.print(table)
+        console.print(f"\n[cyan]Total partitions: {len(partitions)}[/cyan]")
+        console.print(
+            "[yellow]Dry run complete. No repositories were fetched.[/yellow]"
+        )
+        return
+
+    seen_ids: set[int] = set()
     written = 0
 
     with Progress(
@@ -381,4 +454,34 @@ def main(max_repos: int | None = None, out_path: str | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Discover Python repositories on GitHub with AGENTS.md files",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                              # Use defaults from config.yaml
+  %(prog)s -n 1000                      # Fetch up to 1000 repos
+  %(prog)s -o my_repos.jsonl            # Custom output file
+  %(prog)s --dry-run                    # Preview partitions without fetching
+        """,
+    )
+    parser.add_argument(
+        "-n",
+        "--max-repos",
+        type=int,
+        help="Maximum number of repositories to fetch (default: from config.yaml)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        dest="out_path",
+        help="Base output file name (default: from config.yaml, timestamp will be added)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show query partitions without fetching repositories",
+    )
+
+    args = parser.parse_args()
+    main(max_repos=args.max_repos, out_path=args.out_path, dry_run=args.dry_run)
