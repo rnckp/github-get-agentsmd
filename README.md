@@ -2,6 +2,11 @@
 
 **Discover and download AGENTS.md files from Python repositories.**
 
+[![Python](https://img.shields.io/badge/python-v3.12+-blue.svg)](https://github.com/rnckp/github-get-agentsmd)
+![GitHub License](https://img.shields.io/github/license/rnckp/github-get-agentsmd)
+[![GitHub Stars](https://img.shields.io/github/stars/rnckp/github-get-agentsmd.svg)](https://github.com/rnckp/github-get-agentsmd/stargazers)
+<a href="https://github.com/astral-sh/ruff"><img alt="linting - Ruff" class="off-glb" loading="lazy" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json"></a>
+
 > [!NOTE]
 > For learning and inspiration. Downloaded files retain their original licenses—respect those terms.
 
