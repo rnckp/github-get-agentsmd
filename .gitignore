@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# App specific ignores
+.DS_Store
+*.jsonl
+/agents_md_2026-01-04_122036
+uv.lock

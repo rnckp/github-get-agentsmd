@@ -1,0 +1,65 @@
+# GitHub Repository Discovery Configuration
+repos:
+  # Language to search for
+  language: Python
+
+  # Date range for repository activity (YYYY-MM-DD)
+  # cutoff: earliest pushed date to consider
+  # today: latest pushed date (normally today's date)
+  cutoff: "2025-07-04"
+  today: "2026-01-04"
+
+  # Maximum number of repositories to fetch
+  max_repos: 50000
+
+  # Output file name (timestamp will be appended)
+  output_file: repos.jsonl
+
+  # Star count bins for query partitioning
+  # Each tuple is [min_stars, max_stars] (null means no limit)
+  star_bins:
+    - [10000, null]
+    # Uncomment for more granular searches:
+    # - [5000, 9999]
+    # - [2000, 4999]
+    # - [1000, 1999]
+    # - [500, 999]
+    # - [200, 499]
+    # - [100, 199]
+    # - [50, 99]
+    # - [20, 49]
+
+  # Query partitioning settings
+  partition:
+    # Target maximum results per query (GitHub API limit is 1000)
+    max_per_query: 1000
+    # Sleep between partition count checks (seconds)
+    partition_sleep: 0.2
+    # Sleep between result pages (seconds)
+    page_sleep: 0.25
+
+  # API retry settings
+  api:
+    timeout: 60
+    max_retries: 12
+    # Conservative backoff: min(max_backoff, 2 ** min(attempt, backoff_exponent))
+    max_backoff: 60
+    backoff_exponent: 6
+
+# AGENTS.md Download Configuration
+agents_md:
+  # Base output directory name (timestamp will be appended)
+  output_dir: agents_md
+
+  # Delay between downloads to avoid rate limiting (seconds)
+  delay: 0.1
+
+  # Download settings
+  download:
+    timeout: 30
+    max_retries: 3
+    # Exponential backoff base for rate limit retries
+    backoff_base: 2
+
+  # GitHub raw content URL pattern
+  raw_url_pattern: "https://raw.githubusercontent.com/{repo}/{branch}/AGENTS.md"

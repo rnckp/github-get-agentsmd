@@ -1,0 +1,17 @@
+[project]
+name = "github-get-agentsmd"
+version = "0.1.0"
+description = "Discover and download AGENTS.md files from Python repositories"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0.3",
+    "requests>=2.32.5",
+    "rich>=14.2.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.10",
+    "pytest>=8.3.4",
+]
