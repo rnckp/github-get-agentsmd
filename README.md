@@ -40,8 +40,16 @@ Default values work well for most use cases. CLI arguments override config value
 Create a [Personal Access Token](https://github.com/settings/tokens) with `repo` and `user:read:user` permissions:
 
 ```bash
-export GITHUB_TOKEN="ghp_..."
+cp .env.example .env
 ```
+
+Edit `.env`:
+
+```bash
+GITHUB_TOKEN="ghp_..."
+```
+
+An exported `GITHUB_TOKEN` in your shell also works and takes precedence over `.env`.
 
 ## Usage
 
@@ -70,7 +78,7 @@ Output: `agents_md_YYYY-MM-DD_HHMMSS/org/repo/AGENTS.md` + `download_results.jso
 
 | Issue                     | Solution                                                    |
 | ------------------------- | ----------------------------------------------------------- |
-| `ERROR: set GITHUB_TOKEN` | `export GITHUB_TOKEN="..."`                                 |
+| `ERROR: set GITHUB_TOKEN` | Add `GITHUB_TOKEN="..."` to `.env`                          |
 | `403 Forbidden`           | Regenerate token with `repo` and `user:read:user` scopes    |
 | Rate limit                | Scripts auto-wait; run during off-peak hours for large jobs |
 | Empty repos.jsonl         | Adjust filters in `get_repos.py` or verify token works      |
@@ -78,6 +86,7 @@ Output: `agents_md_YYYY-MM-DD_HHMMSS/org/repo/AGENTS.md` + `download_results.jso
 **Verify token:**
 
 ```bash
+set -a && source .env && set +a
 curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/user | jq -r .login
 ```
 

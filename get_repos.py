@@ -1,5 +1,4 @@
 import argparse
-import os
 import json
 import time
 import datetime as dt
@@ -20,8 +19,10 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.status import Status
 
+from github_auth import load_github_token
+
 API = "https://api.github.com"
-TOKEN = os.environ["GITHUB_TOKEN"]
+TOKEN = load_github_token(required=True)
 
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}",

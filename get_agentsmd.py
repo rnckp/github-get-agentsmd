@@ -1,6 +1,5 @@
 import argparse
 import json
-import os
 import time
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,10 +20,12 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from github_auth import load_github_token
+
 console = Console()
 
 # GitHub API authentication (optional but recommended for higher rate limits)
-TOKEN = os.environ.get("GITHUB_TOKEN")
+TOKEN = load_github_token()
 HEADERS = {
     "User-Agent": "agent-md-downloader/1.0",
 }
